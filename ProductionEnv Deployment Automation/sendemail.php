@@ -1,71 +1,73 @@
 <?php
-   
+// Configure CONTACT_RECIPIENT in the server environment before enabling this demo form.
+header('Content-Type: application/json; charset=UTF-8');
+header('Cache-Control: no-store');
+header('X-Content-Type-Options: nosniff');
 
-    session_cache_limiter( 'nocache' );
-    header( 'Expires: ' . gmdate( 'r', 0 ) );
-    header( 'Content-type: application/json' );
-
-
-    $to         = 'trendytheme.net@gmail.com';  // put your email here
-
-    $email_template = 'simple.html';
-
-    $subject    = strip_tags($_POST['subject']);
-    $email       = strip_tags($_POST['email']);
-    $phone      = strip_tags($_POST['phone']);
-    $name       = strip_tags($_POST['name']);
-    $message    = nl2br( htmlspecialchars($_POST['message'], ENT_QUOTES) );
-    $result     = array();
-
-
-    if(empty($name)){
-
-        $result = array( 'response' => 'error', 'empty'=>'name', 'message'=>'<strong>Error!</strong>&nbsp; Name is empty.' );
-        echo json_encode($result );
-        die;
-    } 
-
-    if(empty($email)){
-
-        $result = array( 'response' => 'error', 'empty'=>'email', 'message'=>'<strong>Error!</strong>&nbsp; Email is empty.' );
-        echo json_encode($result );
-        die;
-    } 
-
-    if(empty($message)){
-
-         $result = array( 'response' => 'error', 'empty'=>'message', 'message'=>'<strong>Error!</strong>&nbsp; Message body is empty.' );
-         echo json_encode($result );
-         die;
+function respond($status, $message, $field = null) {
+    http_response_code($status);
+    $result = array(
+        'response' => $status === 200 ? 'success' : 'error',
+        'message' => $message,
+    );
+    if ($field !== null) {
+        $result['empty'] = $field;
     }
-    
+    echo json_encode($result);
+    exit;
+}
 
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    header('Allow: POST');
+    respond(405, 'Only POST requests are supported.');
+}
 
-    $headers  = "From: " . $name . ' <' . $email . '>' . "\r\n";
-    $headers .= "Reply-To: ". $email . "\r\n";
-    $headers .= "MIME-Version: 1.0\r\n";
-    $headers .= "Content-Type: text/html; charset=UTF-8\r\n";
+$recipient = getenv('CONTACT_RECIPIENT');
+if (!$recipient || !filter_var($recipient, FILTER_VALIDATE_EMAIL)) {
+    respond(503, 'The contact form is not configured.');
+}
 
-
-    $templateTags =  array(
-        '{{subject}}' => $subject,
-        '{{email}}'=>$email,
-        '{{message}}'=>$message,
-        '{{name}}'=>$name,
-        '{{phone}}'=>$phone
-        );
-
-
-    $templateContents = file_get_contents( dirname(__FILE__) . '/email-templates/'.$email_template);
-
-    $contents =  strtr($templateContents, $templateTags);
-
-    if ( mail( $to, $subject, $contents, $headers ) ) {
-        $result = array( 'response' => 'success', 'message'=>'<strong>Thank You!</strong>&nbsp; Your email has been delivered.' );
-    } else {
-        $result = array( 'response' => 'error', 'message'=>'<strong>Error!</strong>&nbsp; Cann\'t Send Mail.'  );
+$fields = array();
+foreach (array('name', 'email', 'subject', 'phone', 'message') as $field) {
+    $value = isset($_POST[$field]) && is_string($_POST[$field]) ? trim($_POST[$field]) : '';
+    if (strlen($value) > 5000) {
+        respond(400, 'Please shorten your input.');
     }
+    $fields[$field] = $value;
+}
 
-    echo json_encode( $result );
+foreach (array('name', 'email', 'message') as $required) {
+    if ($fields[$required] === '') {
+        respond(400, 'Please provide ' . $required . '.', $required);
+    }
+}
 
-    die;
+if (!filter_var($fields['email'], FILTER_VALIDATE_EMAIL) || preg_match('/[\r\n]/', $fields['email'])) {
+    respond(400, 'Please enter a valid email address.');
+}
+
+$subject = preg_replace('/[\r\n\x00-\x1f\x7f]+/', ' ', $fields['subject']);
+$subject = $subject !== '' ? $subject : 'Website contact form';
+$templatePath = __DIR__ . '/email-templates/simple.html';
+$template = is_file($templatePath) ? file_get_contents($templatePath) : false;
+if ($template === false) {
+    respond(503, 'The contact form template is unavailable.');
+}
+
+$replacements = array();
+foreach ($fields as $field => $value) {
+    $escaped = htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $replacements['{{' . $field . '}}'] = $field === 'message' ? nl2br($escaped) : $escaped;
+}
+$replacements['{{subject}}'] = htmlspecialchars($subject, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+$body = strtr($template, $replacements);
+
+// Never use untrusted user input as the sender address.
+$headers = "Reply-To: " . $fields['email'] . "\r\n";
+$headers .= "MIME-Version: 1.0\r\n";
+$headers .= "Content-Type: text/html; charset=UTF-8\r\n";
+
+if (!mail($recipient, $subject, $body, $headers)) {
+    respond(503, 'Unable to send your message at this time.');
+}
+respond(200, 'Thank you! Your message has been sent.');
